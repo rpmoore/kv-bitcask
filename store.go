@@ -6,21 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
-	"io"
 	"os"
 	"path"
 	"sync"
 	"time"
 
 	"github.com/zhangxinngang/murmur"
-)
-
-type FileState int64
-
-const (
-	UNKNOWN FileState = iota
-	FSSTATE_WRITE
-	FSSTATE_READ
 )
 
 type BitCask struct {
@@ -43,52 +34,51 @@ type ID uint64
 
 type dataFile struct {
 	ID            ID
-	writer        io.WriteCloser
-	reader        io.ReadSeekCloser // this only allows one thread to read
+	writer        *os.File
+	reader        *readDataFile
 	lock          sync.RWMutex
 	readerLock    sync.Mutex // adding temporarily until a read pool is created
-	state         FileState
 	clock         Clock
 	index         map[uint32]*indexEntry
 	currentOffset uint32
 }
 
 func (d *dataFile) Close() error {
+	if d == nil {
+		return nil
+	}
 	d.lock.Lock()
 	defer d.lock.Unlock()
+
 	err := d.reader.Close()
 	if err != nil {
 		return err
 	}
 
-	if d.state == FSSTATE_WRITE {
-		return d.writer.Close()
-	}
-	return nil
+	return d.writer.Close()
 }
 
-func newDataFile(id ID, directoryPath string, fileState FileState, clock Clock) (*dataFile, error) {
+func newDataFile(id ID, directoryPath string, clock Clock) (*dataFile, error) {
 	fileName := fmt.Sprintf("datafile-%d", id)
 	fileName = path.Join(directoryPath, fileName)
 	var writeFile *os.File
-	if fileState == FSSTATE_WRITE {
-		var err error
-		writeFile, err = os.OpenFile(fileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return nil, err
-		}
+	var err error
+	writeFile, err = os.OpenFile(fileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, err
 	}
 
-	readFile, err := os.OpenFile(fileName, os.O_RDONLY, 0644)
+	index := make(map[uint32]*indexEntry)                         // load from a file in the future, without this we'll have to scan the full file to rebuild the index
+	readOnly, err := newReadDataFileWithFullPath(fileName, index) // share the index with the reader, but only for the current writer, readers will have dedicated indexes when they're not a part of a writer
 	if err != nil {
 		return nil, err
 	}
 
 	return &dataFile{
 		writer: writeFile,
-		reader: readFile,
+		reader: readOnly,
 		clock:  clock,
-		index:  make(map[uint32]*indexEntry), // load from a file in the future, without this we'll have to scan the full file to rebuild the index
+		index:  index,
 	}, nil
 }
 
@@ -252,12 +242,23 @@ func (d *dataFile) Write(key []byte, value []byte) (int, error) {
 	keyHash := entry.KeyHash()
 	newIndexEntry := &indexEntry{
 		KeyHash: keyHash,
-		Offset:  d.currentOffset,
 	}
 	d.lock.Lock()
 	defer d.lock.Unlock()
 	bytesWritten, err := d.writer.Write(record)
+	if err != nil {
+		return 0, err
+	}
+	err = d.writer.Sync()
+	if err != nil {
+		return 0, err
+	}
 	newIndexEntry.Length = uint32(bytesWritten)
+	if bytesWritten != len(record) {
+		return 0, fmt.Errorf("length of data written incorrect, expected: %d, got: %d", len(record), bytesWritten)
+	}
+
+	newIndexEntry.Offset = d.currentOffset
 	d.currentOffset = d.currentOffset + uint32(bytesWritten)
 	d.index[keyHash] = newIndexEntry
 	return bytesWritten, err
@@ -268,61 +269,8 @@ func hash(key []byte) uint32 {
 }
 
 func (d *dataFile) Read(key []byte) ([]byte, error) {
-	index, err := d.lookupIndex(hash(key))
-	if err != nil {
-		return nil, err
-	}
-
-	recordBytes, err := d.readRecordBytes(index)
-	if err != nil {
-		return nil, err
-	}
-
-	record := dataRecord{}
-	err = record.UnmarshalBinary(recordBytes)
-	if err != nil {
-		return nil, err
-	}
-
-	err = record.VerifyChecksum()
-	if err != nil {
-		return nil, err
-	}
-
-	return record.Value, nil
-}
-
-func (d *dataFile) readRecordBytes(index *indexEntry) ([]byte, error) {
-	record := make([]byte, index.Length)
-	// use a reader pool to allow for multiple readers and a customizable number of readers
-	d.readerLock.Lock()
-	defer d.readerLock.Unlock()
-
-	offset, err := d.reader.Seek(int64(index.Offset), io.SeekStart)
-	if err != nil {
-		return nil, err
-	}
-	if offset != int64(index.Offset) {
-		return nil, errors.New("did not seek to correct offset")
-	}
-	bytesRead, err := d.reader.Read(record)
-	if err != nil {
-		return nil, err
-	}
-
-	if uint32(bytesRead) != index.Length {
-		return nil, errors.New("did not read all of the data for the record")
-	}
-
-	return record, nil
-}
-
-func (d *dataFile) lookupIndex(hash uint32) (*indexEntry, error) {
 	d.lock.RLock()
 	defer d.lock.RUnlock()
-	indexEntry, ok := d.index[hash]
-	if !ok {
-		return nil, errors.New("not found")
-	}
-	return indexEntry, nil
+
+	return d.reader.Read(key)
 }

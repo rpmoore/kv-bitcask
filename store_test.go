@@ -2,6 +2,8 @@ package kv_bitcask
 
 import (
 	"encoding/hex"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,7 +28,7 @@ func TestRecordMarshalUnmarshal(t *testing.T) {
 }
 
 func TestDataFileReadWrite(t *testing.T) {
-	file, err := newDataFile(1, t.TempDir(), FSSTATE_WRITE, NewRealClock())
+	file, err := newDataFile(1, t.TempDir(), NewRealClock())
 	defer file.Close()
 	require.NoError(t, err)
 
@@ -45,7 +47,7 @@ func TestDataFileReadWrite(t *testing.T) {
 }
 
 func TestTwoRecords(t *testing.T) {
-	file, err := newDataFile(1, t.TempDir(), FSSTATE_WRITE, NewRealClock())
+	file, err := newDataFile(1, t.TempDir(), NewRealClock())
 	defer file.Close()
 	require.NoError(t, err)
 
@@ -69,4 +71,47 @@ func TestTwoRecords(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, value2Orig, value2)
 	t.Logf("test complete")
+}
+
+func TestConcurrentWrites(t *testing.T) {
+	file, err := newDataFile(1, t.TempDir(), NewRealClock())
+	defer file.Close()
+	require.NoError(t, err)
+
+	wg := sync.WaitGroup{}
+
+	wg.Add(2)
+	go func() {
+		for i := 0; i < 10; i++ {
+			fmt.Printf("writing1 %d\n", i)
+			_, err := file.Write([]byte(fmt.Sprintf("writer1-%d", i)), []byte("I'm a payload"))
+			require.NoError(t, err)
+		}
+		wg.Done()
+	}()
+
+	go func() {
+		for i := 0; i < 10; i++ {
+			fmt.Printf("writing2 %d\n", i)
+			_, err := file.Write([]byte(fmt.Sprintf("writer2-%d", i)), []byte("I'm a different payload"))
+			require.NoError(t, err)
+		}
+		wg.Done()
+	}()
+
+	wg.Wait()
+
+	for i := 0; i < 10; i++ {
+		fmt.Printf("reading writer1 %d\n", i)
+		value, err := file.Read([]byte(fmt.Sprintf("writer1-%d", i)))
+		require.NoError(t, err)
+		require.Equal(t, value, []byte("I'm a payload"))
+	}
+
+	for i := 0; i < 10; i++ {
+		fmt.Printf("reading writer2 %d\n", i)
+		value, err := file.Read([]byte(fmt.Sprintf("writer2-%d", i)))
+		require.NoError(t, err)
+		require.Equal(t, value, []byte("I'm a different payload"))
+	}
 }
