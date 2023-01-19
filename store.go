@@ -253,10 +253,6 @@ func (d *dataFile) Write(key []byte, value []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	newIndexEntry.Length = uint32(bytesWritten)
-	if bytesWritten != len(record) {
-		return 0, fmt.Errorf("length of data written incorrect, expected: %d, got: %d", len(record), bytesWritten)
-	}
 
 	newIndexEntry.Offset = d.currentOffset
 	d.currentOffset = d.currentOffset + uint32(bytesWritten)
