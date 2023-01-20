@@ -15,8 +15,8 @@ import (
 )
 
 type BitCask struct {
-	currentWriter   dataFile
-	closedDataFiles map[ID]dataFile
+	currentWriter   writeDataFile
+	closedDataFiles map[ID]writeDataFile
 }
 
 func (b *BitCask) Get(key []byte) ([]byte, error) {
@@ -32,23 +32,27 @@ func (b *BitCask) Set(key []byte, value []byte) error {
 
 type ID uint64
 
-type dataFile struct {
+type writeDataFile struct {
 	ID            ID
 	writer        *os.File
 	reader        *readDataFile
 	lock          sync.RWMutex
-	readerLock    sync.Mutex // adding temporarily until a read pool is created
 	clock         Clock
 	index         map[uint32]*indexEntry
 	currentOffset uint32
+	closed        bool
 }
 
-func (d *dataFile) Close() error {
+func (d *writeDataFile) Close() error {
 	if d == nil {
 		return nil
 	}
 	d.lock.Lock()
 	defer d.lock.Unlock()
+
+	if d.closed {
+		return nil
+	}
 
 	err := d.reader.Close()
 	if err != nil {
@@ -58,7 +62,7 @@ func (d *dataFile) Close() error {
 	return d.writer.Close()
 }
 
-func newDataFile(id ID, directoryPath string, clock Clock) (*dataFile, error) {
+func newDataFile(id ID, directoryPath string, clock Clock) (*writeDataFile, error) {
 	fileName := fmt.Sprintf("datafile-%d", id)
 	fileName = path.Join(directoryPath, fileName)
 	var writeFile *os.File
@@ -68,13 +72,13 @@ func newDataFile(id ID, directoryPath string, clock Clock) (*dataFile, error) {
 		return nil, err
 	}
 
-	index := make(map[uint32]*indexEntry)                         // load from a file in the future, without this we'll have to scan the full file to rebuild the index
-	readOnly, err := newReadDataFileWithFullPath(fileName, index) // share the index with the reader, but only for the current writer, readers will have dedicated indexes when they're not a part of a writer
+	index := make(map[uint32]*indexEntry)                             // load from a file in the future, without this we'll have to scan the full file to rebuild the index
+	readOnly, err := newReadDataFileWithFullPath(id, fileName, index) // share the index with the reader, but only for the current writer, readers will have dedicated indexes when they're not a part of a writer
 	if err != nil {
 		return nil, err
 	}
 
-	return &dataFile{
+	return &writeDataFile{
 		writer: writeFile,
 		reader: readOnly,
 		clock:  clock,
@@ -228,7 +232,7 @@ func (d *dataRecord) MarshalBinary() ([]byte, error) {
 	return writeBuffer.Bytes(), nil
 }
 
-func (d *dataFile) Write(key []byte, value []byte) (int, error) {
+func (d *writeDataFile) Write(key []byte, value []byte) (int, error) {
 	entry, err := newDataRecord(d.clock.Now(), key, value)
 	if err != nil {
 		return 0, err
@@ -264,9 +268,21 @@ func hash(key []byte) uint32 {
 	return murmur.Murmur3(key)
 }
 
-func (d *dataFile) Read(key []byte) ([]byte, error) {
+func (d *writeDataFile) Read(key []byte) ([]byte, error) {
 	d.lock.RLock()
 	defer d.lock.RUnlock()
 
 	return d.reader.Read(key)
+}
+
+func (d *writeDataFile) ConvertToReadOnly() (*readDataFile, error) {
+	d.lock.Lock()
+	defer d.lock.Unlock()
+	err := d.writer.Close()
+	if err != nil {
+		return nil, err
+	}
+	d.closed = true
+
+	return d.reader, nil
 }

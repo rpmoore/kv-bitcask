@@ -17,7 +17,7 @@ type readDataFile struct {
 func newReadDataFile(id ID, directoryPath string, index map[uint32]*indexEntry) (*readDataFile, error) {
 	fileName := fmt.Sprintf("datafile-%d", id)
 	fileName = path.Join(directoryPath, fileName)
-	dataFile, err := newReadDataFileWithFullPath(fileName, index)
+	dataFile, err := newReadDataFileWithFullPath(id, fileName, index)
 	if err != nil {
 		return nil, err
 	}
@@ -25,13 +25,14 @@ func newReadDataFile(id ID, directoryPath string, index map[uint32]*indexEntry) 
 	return dataFile, nil
 }
 
-func newReadDataFileWithFullPath(filePath string, index map[uint32]*indexEntry) (*readDataFile, error) {
+func newReadDataFileWithFullPath(id ID, filePath string, index map[uint32]*indexEntry) (*readDataFile, error) {
 	readFile, err := os.OpenFile(filePath, os.O_RDONLY, 0644)
 	if err != nil {
 		return nil, err
 	}
 
 	return &readDataFile{
+		ID:     id,
 		reader: readFile,
 		index:  index,
 	}, nil
