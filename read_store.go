@@ -11,10 +11,10 @@ import (
 type readDataFile struct {
 	ID     ID
 	reader io.ReadSeekCloser // this only allows one thread to read
-	index  map[uint32]*indexEntry
+	index  index[uint32, *indexEntry]
 }
 
-func newReadDataFile(id ID, directoryPath string, index map[uint32]*indexEntry) (*readDataFile, error) {
+func newReadDataFile(id ID, directoryPath string, index index[uint32, *indexEntry]) (*readDataFile, error) {
 	fileName := fmt.Sprintf("datafile-%d", id)
 	fileName = path.Join(directoryPath, fileName)
 	dataFile, err := newReadDataFileWithFullPath(id, fileName, index)
@@ -25,7 +25,7 @@ func newReadDataFile(id ID, directoryPath string, index map[uint32]*indexEntry) 
 	return dataFile, nil
 }
 
-func newReadDataFileWithFullPath(id ID, filePath string, index map[uint32]*indexEntry) (*readDataFile, error) {
+func newReadDataFileWithFullPath(id ID, filePath string, index index[uint32, *indexEntry]) (*readDataFile, error) {
 	readFile, err := os.OpenFile(filePath, os.O_RDONLY, 0644)
 	if err != nil {
 		return nil, err
@@ -42,13 +42,12 @@ func (r *readDataFile) Close() error {
 	return r.reader.Close()
 }
 
-func (d *readDataFile) Read(key []byte) ([]byte, error) {
-	index, err := d.lookupIndex(hash(key))
+func (r *readDataFile) Read(key []byte) ([]byte, error) {
+	index, err := r.lookupIndex(hash(key))
 	if err != nil {
 		return nil, err
 	}
-
-	recordBytes, err := d.readRecordBytes(index)
+	recordBytes, err := r.readRecordBytes(index)
 	if err != nil {
 		return nil, err
 	}
@@ -67,18 +66,18 @@ func (d *readDataFile) Read(key []byte) ([]byte, error) {
 	return record.Value, nil
 }
 
-func (d *readDataFile) readRecordBytes(index *indexEntry) ([]byte, error) {
+func (r *readDataFile) readRecordBytes(index *indexEntry) ([]byte, error) {
 	record := make([]byte, index.Length)
 	// use a reader pool to allow for multiple readers and a customizable number of readers
 
-	offset, err := d.reader.Seek(int64(index.Offset), io.SeekStart)
+	offset, err := r.reader.Seek(int64(index.Offset), io.SeekStart)
 	if err != nil {
 		return nil, err
 	}
 	if offset != int64(index.Offset) {
 		return nil, errors.New("did not seek to correct offset")
 	}
-	bytesRead, err := d.reader.Read(record)
+	bytesRead, err := r.reader.Read(record)
 	if err != nil {
 		return nil, err
 	}
@@ -90,8 +89,8 @@ func (d *readDataFile) readRecordBytes(index *indexEntry) ([]byte, error) {
 	return record, nil
 }
 
-func (d *readDataFile) lookupIndex(hash uint32) (*indexEntry, error) {
-	indexEntry, ok := d.index[hash]
+func (r *readDataFile) lookupIndex(hash uint32) (*indexEntry, error) {
+	indexEntry, ok := r.index.Get(hash)
 	if !ok {
 		return nil, errors.New("not found")
 	}

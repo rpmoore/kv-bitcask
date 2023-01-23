@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ncw/directio"
 	"github.com/zhangxinngang/murmur"
 )
 
@@ -33,14 +34,17 @@ func (b *BitCask) Set(key []byte, value []byte) error {
 type ID uint64
 
 type writeDataFile struct {
-	ID            ID
-	writer        *os.File
-	reader        *readDataFile
-	lock          sync.RWMutex
-	clock         Clock
-	index         map[uint32]*indexEntry
-	currentOffset uint32
-	closed        bool
+	ID              ID
+	writer          *os.File
+	reader          *readDataFile
+	lock            sync.Mutex
+	clock           Clock
+	index           index[uint32, *indexEntry]
+	currentOffset   uint32
+	closed          bool
+	lastSync        time.Time
+	maxSyncDuration time.Duration
+	fillBuffer      *bytes.Buffer
 }
 
 func (d *writeDataFile) Close() error {
@@ -62,6 +66,36 @@ func (d *writeDataFile) Close() error {
 	return d.writer.Close()
 }
 
+func newDataFileWithFile(id ID, clock Clock, file *os.File, fileName string) (*writeDataFile, error) {
+	index := newReadWriteIndex()                                      // load from a file in the future, without this we'll have to scan the full file to rebuild the index
+	readOnly, err := newReadDataFileWithFullPath(id, fileName, index) // share the index with the reader, but only for the current writer, readers will have dedicated indexes when they're not a part of a writer
+	if err != nil {
+		return nil, err
+	}
+
+	return &writeDataFile{
+		writer:          file,
+		reader:          readOnly,
+		clock:           clock,
+		index:           index,
+		maxSyncDuration: time.Millisecond * 50,
+		fillBuffer:      &bytes.Buffer{},
+	}, nil
+}
+
+func newDataFileDirectIO(id ID, directoryPath string, clock Clock) (*writeDataFile, error) {
+	fileName := fmt.Sprintf("datafile-%d", id)
+	fileName = path.Join(directoryPath, fileName)
+	var writeFile *os.File
+	var err error
+	writeFile, err = directio.OpenFile(fileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, err
+	}
+
+	return newDataFileWithFile(id, clock, writeFile, fileName)
+}
+
 func newDataFile(id ID, directoryPath string, clock Clock) (*writeDataFile, error) {
 	fileName := fmt.Sprintf("datafile-%d", id)
 	fileName = path.Join(directoryPath, fileName)
@@ -72,18 +106,7 @@ func newDataFile(id ID, directoryPath string, clock Clock) (*writeDataFile, erro
 		return nil, err
 	}
 
-	index := make(map[uint32]*indexEntry)                             // load from a file in the future, without this we'll have to scan the full file to rebuild the index
-	readOnly, err := newReadDataFileWithFullPath(id, fileName, index) // share the index with the reader, but only for the current writer, readers will have dedicated indexes when they're not a part of a writer
-	if err != nil {
-		return nil, err
-	}
-
-	return &writeDataFile{
-		writer: writeFile,
-		reader: readOnly,
-		clock:  clock,
-		index:  index,
-	}, nil
+	return newDataFileWithFile(id, clock, writeFile, fileName)
 }
 
 type indexEntry struct {
@@ -233,7 +256,8 @@ func (d *dataRecord) MarshalBinary() ([]byte, error) {
 }
 
 func (d *writeDataFile) Write(key []byte, value []byte) (int, error) {
-	entry, err := newDataRecord(d.clock.Now(), key, value)
+	currentTime := d.clock.Now()
+	entry, err := newDataRecord(currentTime, key, value)
 	if err != nil {
 		return 0, err
 	}
@@ -243,25 +267,48 @@ func (d *writeDataFile) Write(key []byte, value []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	recordLen := len(record)
 	keyHash := entry.KeyHash()
 	newIndexEntry := &indexEntry{
 		KeyHash: keyHash,
-	}
-	d.lock.Lock()
-	defer d.lock.Unlock()
-	bytesWritten, err := d.writer.Write(record)
-	if err != nil {
-		return 0, err
-	}
-	err = d.writer.Sync()
-	if err != nil {
-		return 0, err
+		Length:  uint32(len(record)),
 	}
 
+	d.lock.Lock()
+	defer d.lock.Unlock()
+
+	if d.fillBuffer.Len()+recordLen > directio.BlockSize {
+		err = d.writeBuffer()
+		if err != nil {
+			return 0, err
+		}
+		if d.lastSync.Add(d.maxSyncDuration).Before(currentTime) {
+			err = d.writer.Sync()
+			if err != nil {
+				return 0, err
+			}
+			d.lastSync = currentTime
+		}
+	}
+
+	d.fillBuffer.Write(record)
+
 	newIndexEntry.Offset = d.currentOffset
-	d.currentOffset = d.currentOffset + uint32(bytesWritten)
-	d.index[keyHash] = newIndexEntry
-	return bytesWritten, err
+	d.currentOffset = d.currentOffset + uint32(recordLen)
+	err = d.index.Set(keyHash, newIndexEntry)
+	if err != nil {
+		return 0, err
+	}
+	return recordLen, err
+}
+
+func (d *writeDataFile) writeBuffer() error {
+	_, err := d.writer.Write(d.fillBuffer.Bytes())
+	if err != nil {
+		return err
+	}
+	d.fillBuffer.Reset()
+	return nil
 }
 
 func hash(key []byte) uint32 {
@@ -269,10 +316,24 @@ func hash(key []byte) uint32 {
 }
 
 func (d *writeDataFile) Read(key []byte) ([]byte, error) {
-	d.lock.RLock()
-	defer d.lock.RUnlock()
-
 	return d.reader.Read(key)
+}
+
+func (d *writeDataFile) Flush() error {
+	d.lock.Lock()
+	defer d.lock.Unlock()
+
+	err := d.writeBuffer()
+	if err != nil {
+		return err
+	}
+	err = d.writer.Sync()
+	if err != nil {
+		return err
+	}
+
+	d.lastSync = d.clock.Now()
+	return nil
 }
 
 func (d *writeDataFile) ConvertToReadOnly() (*readDataFile, error) {
