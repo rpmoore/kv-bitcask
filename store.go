@@ -54,11 +54,16 @@ func (d *writeDataFile) Close() error {
 	d.lock.Lock()
 	defer d.lock.Unlock()
 
+	err := d.flushBuffers()
+	if err != nil {
+		return err
+	}
+
 	if d.closed {
 		return nil
 	}
 
-	err := d.reader.Close()
+	err = d.reader.Close()
 	if err != nil {
 		return err
 	}
@@ -319,10 +324,8 @@ func (d *writeDataFile) Read(key []byte) ([]byte, error) {
 	return d.reader.Read(key)
 }
 
-func (d *writeDataFile) Flush() error {
-	d.lock.Lock()
-	defer d.lock.Unlock()
-
+// flushBuffers flushes any pending writes down to the file. Assumes the caller has the lock
+func (d *writeDataFile) flushBuffers() error {
 	err := d.writeBuffer()
 	if err != nil {
 		return err
@@ -334,6 +337,13 @@ func (d *writeDataFile) Flush() error {
 
 	d.lastSync = d.clock.Now()
 	return nil
+}
+
+func (d *writeDataFile) Flush() error {
+	d.lock.Lock()
+	defer d.lock.Unlock()
+
+	return d.flushBuffers()
 }
 
 func (d *writeDataFile) ConvertToReadOnly() (*readDataFile, error) {
