@@ -82,7 +82,7 @@ func (r *readDataFile) readRecordBytes(index *indexEntry) ([]byte, error) {
 		return nil, err
 	}
 
-	if uint32(bytesRead) != index.Length {
+	if int32(bytesRead) != index.Length {
 		return nil, errors.New("did not read all of the data for the record")
 	}
 

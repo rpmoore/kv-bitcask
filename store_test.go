@@ -35,9 +35,11 @@ func TestDataFileReadWrite(t *testing.T) {
 	key := []byte("foo")
 	valueOrig := []byte("I'm a value")
 
+	fmt.Printf("writing value\n")
 	_, err = file.Write(key, valueOrig)
 	require.NoError(t, err)
 
+	fmt.Printf("flushing\n")
 	require.NoError(t, file.Flush())
 
 	value, err := file.Read(key)
@@ -56,6 +58,35 @@ func TestTwoRecords(t *testing.T) {
 	t.Logf("writing")
 	_, err = file.Write(key, valueOrig)
 	require.NoError(t, err)
+
+	key2 := []byte("bark")
+	value2Orig := []byte("around and around we go")
+	_, err = file.Write(key2, value2Orig)
+	require.NoError(t, err)
+
+	require.NoError(t, file.Flush())
+
+	value, err := file.Read(key)
+	require.NoError(t, err)
+	require.Equal(t, valueOrig, value)
+	value2, err := file.Read(key2)
+	require.NoError(t, err)
+	require.Equal(t, value2Orig, value2)
+}
+
+func TestTwoRecordsWithInnerFlush(t *testing.T) {
+	file, err := newDataFile(1, t.TempDir(), NewRealClock())
+	defer file.Close()
+	require.NoError(t, err)
+
+	key := []byte("foo")
+	valueOrig := []byte("I'm a value")
+
+	t.Logf("writing")
+	_, err = file.Write(key, valueOrig)
+	require.NoError(t, err)
+
+	require.NoError(t, file.Flush())
 
 	key2 := []byte("bark")
 	value2Orig := []byte("around and around we go")

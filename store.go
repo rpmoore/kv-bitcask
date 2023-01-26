@@ -45,6 +45,7 @@ type writeDataFile struct {
 	lastSync        time.Time
 	maxSyncDuration time.Duration
 	fillBuffer      *bytes.Buffer
+	allocator       *allocator
 }
 
 func (d *writeDataFile) Close() error {
@@ -54,7 +55,7 @@ func (d *writeDataFile) Close() error {
 	d.lock.Lock()
 	defer d.lock.Unlock()
 
-	err := d.flushBuffers()
+	err := d.allocator.Close()
 	if err != nil {
 		return err
 	}
@@ -85,6 +86,7 @@ func newDataFileWithFile(id ID, clock Clock, file *os.File, fileName string) (*w
 		index:           index,
 		maxSyncDuration: time.Millisecond * 50,
 		fillBuffer:      &bytes.Buffer{},
+		allocator:       newAllocator(file, 10, directio.BlockSize*100, clock),
 	}, nil
 }
 
@@ -116,8 +118,8 @@ func newDataFile(id ID, directoryPath string, clock Clock) (*writeDataFile, erro
 
 type indexEntry struct {
 	KeyHash uint32
-	Offset  uint32
-	Length  uint32
+	Offset  int32
+	Length  int32
 }
 
 type dataRecord struct {
@@ -276,44 +278,29 @@ func (d *writeDataFile) Write(key []byte, value []byte) (int, error) {
 	keyHash := entry.KeyHash()
 	newIndexEntry := &indexEntry{
 		KeyHash: keyHash,
-		Length:  uint32(len(record)),
+		Length:  int32(len(record)),
 	}
 
-	d.lock.Lock()
-	defer d.lock.Unlock()
-
-	if d.fillBuffer.Len()+recordLen > directio.BlockSize {
-		err = d.writeBuffer()
-		if err != nil {
-			return 0, err
-		}
-		if d.lastSync.Add(d.maxSyncDuration).Before(currentTime) {
-			err = d.writer.Sync()
-			if err != nil {
-				return 0, err
-			}
-			d.lastSync = currentTime
-		}
+	buffer, err := d.allocator.Allocate(recordLen)
+	if err != nil {
+		return 0, err
 	}
+	defer buffer.Close()
 
-	d.fillBuffer.Write(record)
-
-	newIndexEntry.Offset = d.currentOffset
-	d.currentOffset = d.currentOffset + uint32(recordLen)
+	// fmt.Printf("updating index\n")
+	newIndexEntry.Offset = buffer.GetOffset()
 	err = d.index.Set(keyHash, newIndexEntry)
 	if err != nil {
 		return 0, err
 	}
-	return recordLen, err
-}
 
-func (d *writeDataFile) writeBuffer() error {
-	_, err := d.writer.Write(d.fillBuffer.Bytes())
+	// fmt.Printf("writing to buffer\n")
+	err = buffer.Write(record)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	d.fillBuffer.Reset()
-	return nil
+
+	return recordLen, nil
 }
 
 func hash(key []byte) uint32 {
@@ -324,26 +311,8 @@ func (d *writeDataFile) Read(key []byte) ([]byte, error) {
 	return d.reader.Read(key)
 }
 
-// flushBuffers flushes any pending writes down to the file. Assumes the caller has the lock
-func (d *writeDataFile) flushBuffers() error {
-	err := d.writeBuffer()
-	if err != nil {
-		return err
-	}
-	err = d.writer.Sync()
-	if err != nil {
-		return err
-	}
-
-	d.lastSync = d.clock.Now()
-	return nil
-}
-
 func (d *writeDataFile) Flush() error {
-	d.lock.Lock()
-	defer d.lock.Unlock()
-
-	return d.flushBuffers()
+	return d.allocator.Flush()
 }
 
 func (d *writeDataFile) ConvertToReadOnly() (*readDataFile, error) {

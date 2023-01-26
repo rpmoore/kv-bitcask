@@ -14,8 +14,8 @@ func TestReadWriteIndex_SetGet(t *testing.T) {
 
 	value, ok := index.Get(1)
 	require.True(t, ok)
-	require.Equal(t, uint32(1), value.Offset)
+	require.Equal(t, int32(1), value.Offset)
 	value, ok = index.Get(2)
 	require.True(t, ok)
-	require.Equal(t, uint32(3), value.Offset)
+	require.Equal(t, int32(3), value.Offset)
 }
