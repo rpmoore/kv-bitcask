@@ -1,4 +1,4 @@
-package kv_bitcask
+package lockless
 
 import (
 	"sync/atomic"

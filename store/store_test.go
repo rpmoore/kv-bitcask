@@ -1,4 +1,4 @@
-package kv_bitcask
+package store
 
 import (
 	"encoding/hex"
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"kv-bitbask"
 )
 
 func TestRecordMarshalUnmarshal(t *testing.T) {
@@ -28,7 +29,7 @@ func TestRecordMarshalUnmarshal(t *testing.T) {
 }
 
 func TestDataFileReadWrite(t *testing.T) {
-	file, err := newDataFile(1, t.TempDir(), NewRealClock())
+	file, err := newDataFile(1, t.TempDir(), kv_bitcask.NewRealClock())
 	defer file.Close()
 	require.NoError(t, err)
 
@@ -36,7 +37,7 @@ func TestDataFileReadWrite(t *testing.T) {
 	valueOrig := []byte("I'm a value")
 
 	fmt.Printf("writing value\n")
-	_, err = file.Write(key, valueOrig)
+	err = file.Write(key, valueOrig)
 	require.NoError(t, err)
 
 	fmt.Printf("flushing\n")
@@ -48,7 +49,7 @@ func TestDataFileReadWrite(t *testing.T) {
 }
 
 func TestTwoRecords(t *testing.T) {
-	file, err := newDataFile(1, t.TempDir(), NewRealClock())
+	file, err := newDataFile(1, t.TempDir(), kv_bitcask.NewRealClock())
 	defer file.Close()
 	require.NoError(t, err)
 
@@ -56,12 +57,12 @@ func TestTwoRecords(t *testing.T) {
 	valueOrig := []byte("I'm a value")
 
 	t.Logf("writing")
-	_, err = file.Write(key, valueOrig)
+	err = file.Write(key, valueOrig)
 	require.NoError(t, err)
 
 	key2 := []byte("bark")
 	value2Orig := []byte("around and around we go")
-	_, err = file.Write(key2, value2Orig)
+	err = file.Write(key2, value2Orig)
 	require.NoError(t, err)
 
 	require.NoError(t, file.Flush())
@@ -75,7 +76,7 @@ func TestTwoRecords(t *testing.T) {
 }
 
 func TestTwoRecordsWithInnerFlush(t *testing.T) {
-	file, err := newDataFile(1, t.TempDir(), NewRealClock())
+	file, err := newDataFile(1, t.TempDir(), kv_bitcask.NewRealClock())
 	defer file.Close()
 	require.NoError(t, err)
 
@@ -83,14 +84,14 @@ func TestTwoRecordsWithInnerFlush(t *testing.T) {
 	valueOrig := []byte("I'm a value")
 
 	t.Logf("writing")
-	_, err = file.Write(key, valueOrig)
+	err = file.Write(key, valueOrig)
 	require.NoError(t, err)
 
 	require.NoError(t, file.Flush())
 
 	key2 := []byte("bark")
 	value2Orig := []byte("around and around we go")
-	_, err = file.Write(key2, value2Orig)
+	err = file.Write(key2, value2Orig)
 	require.NoError(t, err)
 
 	require.NoError(t, file.Flush())
@@ -104,7 +105,7 @@ func TestTwoRecordsWithInnerFlush(t *testing.T) {
 }
 
 func TestConcurrentWrites(t *testing.T) {
-	file, err := newDataFile(1, t.TempDir(), NewRealClock())
+	file, err := newDataFile(1, t.TempDir(), kv_bitcask.NewRealClock())
 	defer file.Close()
 	require.NoError(t, err)
 
@@ -113,7 +114,7 @@ func TestConcurrentWrites(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		for i := 0; i < 10; i++ {
-			_, err := file.Write([]byte(fmt.Sprintf("writer1-%d", i)), []byte("I'm a payload"))
+			err := file.Write([]byte(fmt.Sprintf("writer1-%d", i)), []byte("I'm a payload"))
 			require.NoError(t, err)
 		}
 		wg.Done()
@@ -121,7 +122,7 @@ func TestConcurrentWrites(t *testing.T) {
 
 	go func() {
 		for i := 0; i < 10; i++ {
-			_, err := file.Write([]byte(fmt.Sprintf("writer2-%d", i)), []byte("I'm a different payload"))
+			err := file.Write([]byte(fmt.Sprintf("writer2-%d", i)), []byte("I'm a different payload"))
 			require.NoError(t, err)
 		}
 		wg.Done()
@@ -145,24 +146,24 @@ func TestConcurrentWrites(t *testing.T) {
 }
 
 func BenchmarkReadWrite(b *testing.B) {
-	file, err := newDataFile(1, b.TempDir(), NewRealClock())
+	file, err := newDataFile(1, b.TempDir(), kv_bitcask.NewRealClock())
 	defer file.Close()
 	require.NoError(b, err)
 
 	b.Run("normal-io", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			_, err := file.Write([]byte(fmt.Sprintf("key-%d", i)), []byte("I'm a record"))
+			err := file.Write([]byte(fmt.Sprintf("key-%d", i)), []byte("I'm a record"))
 			require.NoError(b, err)
 		}
 	})
 
-	directFile, err := newDataFileDirectIO(2, b.TempDir(), NewRealClock())
+	directFile, err := newDataFileDirectIO(2, b.TempDir(), kv_bitcask.NewRealClock())
 	defer file.Close()
 	require.NoError(b, err)
 
 	b.Run("direct-io", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			_, err := directFile.Write([]byte(fmt.Sprintf("key-%d", i)), []byte("I'm a record"))
+			err := directFile.Write([]byte(fmt.Sprintf("key-%d", i)), []byte("I'm a record"))
 			require.NoError(b, err)
 		}
 	})

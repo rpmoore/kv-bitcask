@@ -1,4 +1,4 @@
-package kv_bitcask
+package store
 
 import (
 	"errors"
@@ -6,15 +6,19 @@ import (
 	"io"
 	"os"
 	"path"
+
+	kv_bitcask "kv-bitbask"
 )
 
+var _ kv_bitcask.DataFile = new(readDataFile)
+
 type readDataFile struct {
-	ID     ID
+	ID     kv_bitcask.ID
 	reader io.ReadSeekCloser // this only allows one thread to read
-	index  index[uint32, *indexEntry]
+	index  kv_bitcask.Index[uint32, *indexEntry]
 }
 
-func newReadDataFile(id ID, directoryPath string, index index[uint32, *indexEntry]) (*readDataFile, error) {
+func newReadDataFile(id kv_bitcask.ID, directoryPath string, index kv_bitcask.Index[uint32, *indexEntry]) (*readDataFile, error) {
 	fileName := fmt.Sprintf("datafile-%d", id)
 	fileName = path.Join(directoryPath, fileName)
 	dataFile, err := newReadDataFileWithFullPath(id, fileName, index)
@@ -25,7 +29,7 @@ func newReadDataFile(id ID, directoryPath string, index index[uint32, *indexEntr
 	return dataFile, nil
 }
 
-func newReadDataFileWithFullPath(id ID, filePath string, index index[uint32, *indexEntry]) (*readDataFile, error) {
+func newReadDataFileWithFullPath(id kv_bitcask.ID, filePath string, index kv_bitcask.Index[uint32, *indexEntry]) (*readDataFile, error) {
 	readFile, err := os.OpenFile(filePath, os.O_RDONLY, 0644)
 	if err != nil {
 		return nil, err

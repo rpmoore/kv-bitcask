@@ -1,4 +1,4 @@
-package kv_bitcask
+package lockless
 
 import (
 	"errors"
@@ -7,7 +7,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"kv-bitbask"
 )
+
+var _ kv_bitcask.Buffer = new(buffer)
 
 type buffer struct {
 	bytes         []byte
@@ -37,12 +41,13 @@ func (b *buffer) Write(data []byte) error {
 }
 
 // Close marks the allocated buffer as done and allows the current backing buffer to be free to be written to disk
-func (b *buffer) Close() {
+func (b *buffer) Close() error {
 	if b.closed.Load() {
-		return
+		return nil
 	}
 	b.close()
 	b.closed.Store(true)
+	return nil
 }
 
 type segment struct {
@@ -132,11 +137,13 @@ type allocator struct {
 	flushLock *sync.Mutex
 	flushChan chan bool
 	lastFlush atomic.Int64
-	clock     Clock
+	clock     kv_bitcask.Clock
 	closed    atomic.Bool
 }
 
-func newAllocator(file *os.File, numSegments int, segmentSize int, clock Clock) *allocator {
+var _ kv_bitcask.Allocator = new(allocator)
+
+func NewAllocator(file *os.File, numSegments int, segmentSize int, clock kv_bitcask.Clock) kv_bitcask.Allocator {
 	lock := &sync.Mutex{}
 	segments := make([]*segment, numSegments, numSegments)
 	flushChan := make(chan bool, 100)
@@ -215,7 +222,7 @@ func (a *allocator) flusher() {
 	}
 }
 
-func (a *allocator) Allocate(size int) (*buffer, error) {
+func (a *allocator) Allocate(size int) (kv_bitcask.Buffer, error) {
 	for {
 		head := a.head.Load()
 		tail := a.tail.Load()

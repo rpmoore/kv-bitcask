@@ -1,4 +1,4 @@
-package kv_bitcask
+package store
 
 import (
 	"bytes"
@@ -13,39 +13,25 @@ import (
 
 	"github.com/ncw/directio"
 	"github.com/zhangxinngang/murmur"
+	"kv-bitbask"
+	"kv-bitbask/lockless"
 )
 
-type BitCask struct {
-	currentWriter   writeDataFile
-	closedDataFiles map[ID]writeDataFile
-}
-
-func (b *BitCask) Get(key []byte) ([]byte, error) {
-	// need to determine how we'll do the lookup
-	return nil, nil
-}
-
-func (b *BitCask) Set(key []byte, value []byte) error {
-	// need to record which data file the write went to
-	_, err := b.currentWriter.Write(key, value)
-	return err
-}
-
-type ID uint64
+var _ kv_bitcask.DataFileWriter = new(writeDataFile)
 
 type writeDataFile struct {
-	ID              ID
+	ID              kv_bitcask.ID
 	writer          *os.File
 	reader          *readDataFile
 	lock            sync.Mutex
-	clock           Clock
-	index           index[uint32, *indexEntry]
+	clock           kv_bitcask.Clock
+	index           kv_bitcask.Index[uint32, *indexEntry]
 	currentOffset   uint32
 	closed          bool
 	lastSync        time.Time
 	maxSyncDuration time.Duration
 	fillBuffer      *bytes.Buffer
-	allocator       *allocator
+	allocator       kv_bitcask.Allocator
 }
 
 func (d *writeDataFile) Close() error {
@@ -72,9 +58,9 @@ func (d *writeDataFile) Close() error {
 	return d.writer.Close()
 }
 
-func newDataFileWithFile(id ID, clock Clock, file *os.File, fileName string) (*writeDataFile, error) {
-	index := newReadWriteIndex()                                      // load from a file in the future, without this we'll have to scan the full file to rebuild the index
-	readOnly, err := newReadDataFileWithFullPath(id, fileName, index) // share the index with the reader, but only for the current writer, readers will have dedicated indexes when they're not a part of a writer
+func newDataFileWithFile(id kv_bitcask.ID, clock kv_bitcask.Clock, file *os.File, fileName string) (*writeDataFile, error) {
+	index := newReadWriteIndex()                                      // load from a file in the future, without this we'll have to scan the full file to rebuild the Index
+	readOnly, err := newReadDataFileWithFullPath(id, fileName, index) // share the Index with the reader, but only for the current writer, readers will have dedicated indexes when they're not a part of a writer
 	if err != nil {
 		return nil, err
 	}
@@ -86,11 +72,11 @@ func newDataFileWithFile(id ID, clock Clock, file *os.File, fileName string) (*w
 		index:           index,
 		maxSyncDuration: time.Millisecond * 50,
 		fillBuffer:      &bytes.Buffer{},
-		allocator:       newAllocator(file, 10, directio.BlockSize*100, clock),
+		allocator:       lockless.NewAllocator(file, 10, directio.BlockSize*100, clock),
 	}, nil
 }
 
-func newDataFileDirectIO(id ID, directoryPath string, clock Clock) (*writeDataFile, error) {
+func newDataFileDirectIO(id kv_bitcask.ID, directoryPath string, clock kv_bitcask.Clock) (*writeDataFile, error) {
 	fileName := fmt.Sprintf("datafile-%d", id)
 	fileName = path.Join(directoryPath, fileName)
 	var writeFile *os.File
@@ -103,7 +89,7 @@ func newDataFileDirectIO(id ID, directoryPath string, clock Clock) (*writeDataFi
 	return newDataFileWithFile(id, clock, writeFile, fileName)
 }
 
-func newDataFile(id ID, directoryPath string, clock Clock) (*writeDataFile, error) {
+func newDataFile(id kv_bitcask.ID, directoryPath string, clock kv_bitcask.Clock) (*writeDataFile, error) {
 	fileName := fmt.Sprintf("datafile-%d", id)
 	fileName = path.Join(directoryPath, fileName)
 	var writeFile *os.File
@@ -262,17 +248,17 @@ func (d *dataRecord) MarshalBinary() ([]byte, error) {
 	return writeBuffer.Bytes(), nil
 }
 
-func (d *writeDataFile) Write(key []byte, value []byte) (int, error) {
+func (d *writeDataFile) Write(key []byte, value []byte) error {
 	currentTime := d.clock.Now()
 	entry, err := newDataRecord(currentTime, key, value)
 	if err != nil {
-		return 0, err
+		return err
 	}
 
 	// perform any marshalling and calculations outside the critical section to keep it small
 	record, err := entry.MarshalBinary()
 	if err != nil {
-		return 0, err
+		return err
 	}
 	recordLen := len(record)
 	keyHash := entry.KeyHash()
@@ -283,24 +269,24 @@ func (d *writeDataFile) Write(key []byte, value []byte) (int, error) {
 
 	buffer, err := d.allocator.Allocate(recordLen)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	defer buffer.Close()
 
-	// fmt.Printf("updating index\n")
+	// fmt.Printf("updating Index\n")
 	newIndexEntry.Offset = buffer.GetOffset()
 	err = d.index.Set(keyHash, newIndexEntry)
 	if err != nil {
-		return 0, err
+		return err
 	}
 
 	// fmt.Printf("writing to buffer\n")
 	err = buffer.Write(record)
 	if err != nil {
-		return 0, err
+		return err
 	}
 
-	return recordLen, nil
+	return nil
 }
 
 func hash(key []byte) uint32 {
@@ -315,7 +301,7 @@ func (d *writeDataFile) Flush() error {
 	return d.allocator.Flush()
 }
 
-func (d *writeDataFile) ConvertToReadOnly() (*readDataFile, error) {
+func (d *writeDataFile) CloseToWriting() (kv_bitcask.DataFile, error) {
 	d.lock.Lock()
 	defer d.lock.Unlock()
 	err := d.writer.Close()

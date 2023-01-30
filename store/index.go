@@ -1,20 +1,16 @@
-package kv_bitcask
+package store
 
 import (
 	"sync"
-)
 
-type index[K comparable, V any] interface {
-	Get(key K) (V, bool)
-	Set(key K, value V) error
-	Range(func(key K, value V))
-}
+	kv_bitcask "kv-bitbask"
+)
 
 type readWriteIndex struct {
 	mapIndex sync.Map
 }
 
-var _ index[uint32, *indexEntry] = new(readWriteIndex)
+var _ kv_bitcask.Index[uint32, *indexEntry] = new(readWriteIndex)
 
 func newReadWriteIndex() *readWriteIndex {
 	return &readWriteIndex{}
@@ -45,7 +41,7 @@ func (r *readWriteIndex) Range(method func(key uint32, value *indexEntry)) {
 	})
 }
 
-var _ index[uint32, *indexEntry] = new(readOnlyIndex)
+var _ kv_bitcask.Index[uint32, *indexEntry] = new(readOnlyIndex)
 
 type readOnlyIndex struct {
 	index map[uint32]*indexEntry
@@ -66,7 +62,7 @@ func (r *readOnlyIndex) Range(method func(key uint32, value *indexEntry)) {
 	}
 }
 
-func newReadOnlyIndex(index index[uint32, *indexEntry]) *readOnlyIndex {
+func newReadOnlyIndex(index kv_bitcask.Index[uint32, *indexEntry]) *readOnlyIndex {
 	localIndex := make(map[uint32]*indexEntry)
 
 	index.Range(func(key uint32, value *indexEntry) {
